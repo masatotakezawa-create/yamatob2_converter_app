@@ -2,7 +2,6 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import io
-import re
 
 # 画面設定
 st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="centered")
@@ -15,6 +14,10 @@ def clean_address(pref, addr1):
     pref = str(pref).strip() if pd.notna(pref) and str(pref) != 'nan' else ''
     addr1 = str(addr1).strip() if pd.notna(addr1) and str(addr1) != 'nan' else ''
     
+    # 特殊な文字化け補正（例：?宮市 -> 西宮市）
+    if "?宮市" in addr1:
+        addr1 = addr1.replace("?宮市", "西宮市")
+        
     # 特殊記号・スペースの除去
     addr1 = addr1.replace(" ", "").replace(" ", "").replace("?", "").replace("？", "")
     
@@ -74,24 +77,39 @@ if uploaded_file is not None:
             "投函完了メール（ご依頼主宛）メールメッセージ"
         ]
 
+        valid_rows = []
+        for _, row in df_saaske.iterrows():
+            pref = row.get("都道府県")
+            addr1 = row.get("住所1")
+            zipcode = str(row.get("郵便番号", "")).replace("-", "").strip() if pd.notna(row.get("郵便番号")) else ""
+            hosp = str(row.get("病院名", "")).strip() if pd.notna(row.get("病院名")) else ""
+            
+            # 住所・郵便番号ともに欠損している行（閉院等）はスキップ
+            if (pd.isna(addr1) or not str(addr1).strip()) and not zipcode:
+                continue
+                
+            cleaned_addr = clean_address(pref, addr1)
+            
+            # 郵便番号個別に欠損している場合の救済（加茂病院）
+            if "加茂病院" in hosp and not zipcode:
+                zipcode = "9591395"
+                
+            valid_rows.append({
+                "お届け先電話番号": str(row.get("電話番号", "")).replace("-", "").strip() if pd.notna(row.get("電話番号")) else "",
+                "お届け先郵便番号": zipcode,
+                "お届け先住所": cleaned_addr[:32],
+                "お届け先アパートマンション名": cleaned_addr[32:48],
+                "お届け先名": hosp[:16]
+            })
+
+        df_valid = pd.DataFrame(valid_rows)
         df_b2 = pd.DataFrame(columns=b2_columns)
 
-        # 住所クレンジングの適用
-        cleaned_addresses = [
-            clean_address(row.get("都道府県"), row.get("住所1")) 
-            for _, row in df_saaske.iterrows()
-        ]
+        # 有効データの転記
+        for col in ["お届け先電話番号", "お届け先郵便番号", "お届け先住所", "お届け先アパートマンション名", "お届け先名"]:
+            df_b2[col] = df_valid[col]
 
-        df_b2["お届け先電話番号"] = df_saaske["電話番号"].fillna("").astype(str).str.replace("-", "").str.strip()
-        df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].fillna("").astype(str).str.replace("-", "").str.strip()
-        
-        # クレンジング後の住所適用（32文字カット）
-        df_b2["お届け先住所"] = [addr[:32] for addr in cleaned_addresses]
-        df_b2["お届け先アパートマンション名"] = [addr[32:48] for addr in cleaned_addresses]
-        
-        df_b2["お届け先名"] = df_saaske["病院名"].fillna("").astype(str).str.strip().str[:16]
-        
-        # 固定値
+        # 固定値の設定
         df_b2["送り状種類"] = "0"
         df_b2["出荷予定日"] = datetime.now().strftime("%Y/%m/%d")
         df_b2["品名１"] = "書類"
