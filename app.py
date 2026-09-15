@@ -55,19 +55,24 @@ if uploaded_file is not None:
 
         df_b2 = pd.DataFrame(columns=b2_columns)
 
-        # マッピング処理（基本情報）
-        df_b2["お届け先電話番号"] = df_saaske["電話番号"].astype(str).str.replace("-", "")
-        df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].astype(str).str.replace("-", "")
+        # 1. 基本データ抽出 & クリーニング処理
+        pref = df_saaske["都道府県"].fillna("").astype(str).str.strip()
+        addr1 = df_saaske["住所1"].fillna("").astype(str).str.strip()
         
-        # 住所処理：都道府県 + 住所1
-        full_addr = df_saaske["都道府県"].fillna("").astype(str) + df_saaske["住所1"].fillna("").astype(str)
+        # 住所内の全角・半角スペース、文字化け記号(?)を除去して整形
+        addr1_clean = addr1.str.replace(" ", "").str.replace(" ", "").str.replace("?", "").str.replace("？", "")
+        full_addr = pref + addr1_clean
+
+        # マッピング処理
+        df_b2["お届け先電話番号"] = df_saaske["電話番号"].fillna("").astype(str).str.replace("-", "").str.strip()
+        df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].fillna("").astype(str).str.replace("-", "").str.strip()
         
-        # 32文字までを「お届け先住所」に入れ、はみ出た分を「アパートマンション名」へ逃がす
+        # 住所を最大32文字でカットし、はみ出た分をマンション名に流す
         df_b2["お届け先住所"] = full_addr.str[:32]
         df_b2["お届け先アパートマンション名"] = full_addr.str[32:48]
         
         # 病院名（全角16文字制限）
-        df_b2["お届け先名"] = df_saaske["病院名"].astype(str).str[:16]
+        df_b2["お届け先名"] = df_saaske["病院名"].fillna("").astype(str).str.strip().str[:16]
         
         # 固定値データ
         df_b2["送り状種類"] = "0"  # 発払い
