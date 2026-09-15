@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import io
+import re
 
 # 画面設定
 st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="centered")
@@ -9,16 +10,36 @@ st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="
 st.title("📦 ヤマト B2クラウド データ変換ツール")
 st.write("サスケから出力したCSVファイルをドラッグ＆ドロップしてください。")
 
+# 住所文字列の自動クレンジング関数
+def clean_address(pref, addr1):
+    pref = str(pref).strip() if pd.notna(pref) and str(pref) != 'nan' else ''
+    addr1 = str(addr1).strip() if pd.notna(addr1) and str(addr1) != 'nan' else ''
+    
+    # 特殊記号・スペースの除去
+    addr1 = addr1.replace(" ", "").replace(" ", "").replace("?", "").replace("？", "")
+    
+    # 「愛知」などの都道府県省略表記補正
+    if pref == "愛知":
+        pref = "愛知県"
+    elif pref == "岩手":
+        pref = "岩手県"
+        
+    # 都道府県の二重重複（例：千葉県千葉県...）を解消
+    if pref and addr1.startswith(pref):
+        full_addr = addr1
+    else:
+        full_addr = pref + addr1
+        
+    return full_addr
+
 # ファイルアップローダー
 uploaded_file = st.file_uploader("サスケのCSVファイルを選択", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        # サスケのCSV読み込み（Shift-JIS想定）
         df_saaske = pd.read_csv(uploaded_file, encoding="cp932")
         st.success(f"データ読み込み成功: {len(df_saaske)} 件")
 
-        # B2クラウド標準フォーマット（95列）の枠組みを作成
         b2_columns = [
             "お客様管理番号", "送り状種類", "クール区分", "伝票番号", "出荷予定日", 
             "お届け予定日", "配達時間帯", "お届け先コード", "お届け先電話番号", 
@@ -55,33 +76,28 @@ if uploaded_file is not None:
 
         df_b2 = pd.DataFrame(columns=b2_columns)
 
-        # 1. 基本データ抽出 & クリーニング処理
-        pref = df_saaske["都道府県"].fillna("").astype(str).str.strip()
-        addr1 = df_saaske["住所1"].fillna("").astype(str).str.strip()
-        
-        # 住所内の全角・半角スペース、文字化け記号(?)を除去して整形
-        addr1_clean = addr1.str.replace(" ", "").str.replace(" ", "").str.replace("?", "").str.replace("？", "")
-        full_addr = pref + addr1_clean
+        # 住所クレンジングの適用
+        cleaned_addresses = [
+            clean_address(row.get("都道府県"), row.get("住所1")) 
+            for _, row in df_saaske.iterrows()
+        ]
 
-        # マッピング処理
         df_b2["お届け先電話番号"] = df_saaske["電話番号"].fillna("").astype(str).str.replace("-", "").str.strip()
         df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].fillna("").astype(str).str.replace("-", "").str.strip()
         
-        # 住所を最大32文字でカットし、はみ出た分をマンション名に流す
-        df_b2["お届け先住所"] = full_addr.str[:32]
-        df_b2["お届け先アパートマンション名"] = full_addr.str[32:48]
+        # クレンジング後の住所適用（32文字カット）
+        df_b2["お届け先住所"] = [addr[:32] for addr in cleaned_addresses]
+        df_b2["お届け先アパートマンション名"] = [addr[32:48] for addr in cleaned_addresses]
         
-        # 病院名（全角16文字制限）
         df_b2["お届け先名"] = df_saaske["病院名"].fillna("").astype(str).str.strip().str[:16]
         
-        # 固定値データ
-        df_b2["送り状種類"] = "0"  # 発払い
+        # 固定値
+        df_b2["送り状種類"] = "0"
         df_b2["出荷予定日"] = datetime.now().strftime("%Y/%m/%d")
         df_b2["品名１"] = "書類"
         df_b2["請求先顧客コード"] = "0366795957"
         df_b2["運賃管理番号"] = "01"
         
-        # ご依頼主情報（固定）
         df_b2["ご依頼主電話番号"] = "03-6679-5957"
         df_b2["ご依頼主郵便番号"] = "150-0043"
         df_b2["ご依頼主住所"] = "東京都渋谷区道玄坂２－６－１４"
@@ -91,7 +107,6 @@ if uploaded_file is not None:
         st.subheader("変換データプレビュー")
         st.dataframe(df_b2[["出荷予定日", "お届け先名", "お届け先郵便番号", "お届け先住所", "品名１"]].head())
 
-        # CSVダウンロードボタン
         csv_buffer = io.StringIO()
         df_b2.to_csv(csv_buffer, index=False, encoding="cp932")
         
