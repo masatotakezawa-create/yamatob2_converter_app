@@ -2,7 +2,6 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import io
-import re
 
 # 画面設定
 st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="centered")
@@ -10,46 +9,23 @@ st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="
 st.title("📦 ヤマト B2クラウド データ変換ツール")
 st.write("サスケから出力したCSVファイルをドラッグ＆ドロップしてください。")
 
-# 住所（住所1）から「市区郡町村」と「町・番地」を切り分ける処理
-def extract_city_and_town(address_str):
-    if pd.isna(address_str) or not address_str:
-        return "", ""
-    
-    address = str(address_str).strip()
-    
-    # 都道府県が含まれている場合は安全のために除去
-    address = re.sub(r'^(東京都|北海道|(京都|大阪)府|.{2,3}県)', '', address)
-    
-    # 市区町村のパターンマッチ
-    match = re.match(r'^(.+?[市区町村]|.+?郡.+?[町村])(.*)$', address)
-    if match:
-        city = match.group(1)
-        town = match.group(2)
-    else:
-        # マッチしない場合は全体を町・番地側へ流す
-        city = ""
-        town = address
-        
-    return city[:12], town[:16]
-
 # ファイルアップローダー
 uploaded_file = st.file_uploader("サスケのCSVファイルを選択", type=["csv"])
 
 if uploaded_file is not None:
     try:
-        # サスケのCSV読み込み
+        # サスケのCSV読み込み（Shift-JIS想定）
         df_saaske = pd.read_csv(uploaded_file, encoding="cp932")
         st.success(f"データ読み込み成功: {len(df_saaske)} 件")
 
-        # B2クラウド標準フォーマット（95列）
+        # B2クラウド標準フォーマット（95列）の枠組みを作成
         b2_columns = [
             "お客様管理番号", "送り状種類", "クール区分", "伝票番号", "出荷予定日", 
             "お届け予定日", "配達時間帯", "お届け先コード", "お届け先電話番号", 
-            "お届け先電話番号枝番", "お届け先郵便番号", "お届け先都道府県", "お届け先市区郡町村", 
-            "お届け先町・番地", "お届け先アパートマンション名", "お届け先会社・部門１", 
-            "お届け先会社・部門２", "お届け先名", "お届け先名(ｶﾅ)", "敬称", 
-            "ご依頼主コード", "ご依頼主電話番号", "ご依頼主電話番号枝番", "ご依頼主郵便番号", 
-            "ご依頼主都道府県", "ご依頼主市区郡町村", "ご依頼主町・番地", 
+            "お届け先電話番号枝番", "お届け先郵便番号", "お届け先住所", 
+            "お届け先アパートマンション名", "お届け先会社・部門１", "お届け先会社・部門２", 
+            "お届け先名", "お届け先名(ｶﾅ)", "敬称", "ご依頼主コード", "ご依頼主電話番号", 
+            "ご依頼主電話番号枝番", "ご依頼主郵便番号", "ご依頼主住所", 
             "ご依頼主アパートマンション", "ご依頼主名", "ご依頼主名(ｶﾅ)", "品名コード１", 
             "品名１", "品名コード２", "品名２", "荷扱い１", "荷扱い２", "記事", 
             "ｺﾚｸﾄ代金引換額（税込)", "内消費税額等", "止置き", "営業所コード", "発行枚数", 
@@ -79,42 +55,38 @@ if uploaded_file is not None:
 
         df_b2 = pd.DataFrame(columns=b2_columns)
 
-        # 1. 基本情報マッピング
+        # マッピング処理（基本情報）
         df_b2["お届け先電話番号"] = df_saaske["電話番号"].astype(str).str.replace("-", "")
         df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].astype(str).str.replace("-", "")
-        df_b2["お届け先都道府県"] = df_saaske["都道府県"].fillna("")
         
-        # 2. 住所の切り分け処理（市区郡町村 / 町・番地）
-        city_town_pairs = [extract_city_and_town(addr) for addr in df_saaske["住所1"]]
-        df_b2["お届け先市区郡町村"] = [pair[0] for pair in city_town_pairs]
-        df_b2["お届け先町・番地"] = [pair[1] for pair in city_town_pairs]
+        # 住所処理：都道府県 + 住所1
+        full_addr = df_saaske["都道府県"].fillna("").astype(str) + df_saaske["住所1"].fillna("").astype(str)
         
-        # 3. 建物名（住所2がある場合）
-        if "住所2" in df_saaske.columns:
-            df_b2["お届け先アパートマンション名"] = df_saaske["住所2"].fillna("").astype(str).str[:16]
-
+        # 32文字までを「お届け先住所」に入れ、はみ出た分を「アパートマンション名」へ逃がす
+        df_b2["お届け先住所"] = full_addr.str[:32]
+        df_b2["お届け先アパートマンション名"] = full_addr.str[32:48]
+        
+        # 病院名（全角16文字制限）
         df_b2["お届け先名"] = df_saaske["病院名"].astype(str).str[:16]
         
-        # 4. 固定値データ
+        # 固定値データ
         df_b2["送り状種類"] = "0"  # 発払い
         df_b2["出荷予定日"] = datetime.now().strftime("%Y/%m/%d")
         df_b2["品名１"] = "書類"
         df_b2["請求先顧客コード"] = "0366795957"
         df_b2["運賃管理番号"] = "01"
         
-        # 5. ご依頼主情報
-        df_b2["ご依頼主電話番号"] = "0366795957"
-        df_b2["ご依頼主郵便番号"] = "1500043"
-        df_b2["ご依頼主都道府県"] = "東京都"
-        df_b2["ご依頼主市区郡町村"] = "渋谷区"
-        df_b2["ご依頼主町・番地"] = "道玄坂2-6-14"
-        df_b2["ご依頼主アパートマンション"] = "野村不動産道玄坂ビル2階"
+        # ご依頼主情報（固定）
+        df_b2["ご依頼主電話番号"] = "03-6679-5957"
+        df_b2["ご依頼主郵便番号"] = "150-0043"
+        df_b2["ご依頼主住所"] = "東京都渋谷区道玄坂２－６－１４"
+        df_b2["ご依頼主アパートマンション"] = "野村不動産道玄坂ビル２階"
         df_b2["ご依頼主名"] = "株式会社バリューメディカル"
 
         st.subheader("変換データプレビュー")
-        st.dataframe(df_b2[["出荷予定日", "お届け先名", "お届け先郵便番号", "お届け先都道府県", "お届け先市区郡町村", "お届け先町・番地", "お届け先アパートマンション名"]].head())
+        st.dataframe(df_b2[["出荷予定日", "お届け先名", "お届け先郵便番号", "お届け先住所", "品名１"]].head())
 
-        # CSV出力（ヘッダー付き・Shift-JIS）
+        # CSVダウンロードボタン
         csv_buffer = io.StringIO()
         df_b2.to_csv(csv_buffer, index=False, encoding="cp932")
         
