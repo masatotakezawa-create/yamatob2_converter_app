@@ -2,12 +2,35 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import io
+import re
 
 # 画面設定
 st.set_page_config(page_title="B2クラウドデータ変換ツール", layout="centered")
 
 st.title("📦 ヤマト B2クラウド データ変換ツール")
 st.write("サスケから出力したCSVファイルをドラッグ＆ドロップしてください。")
+
+# 住所から市区郡町村を抽出する関数
+def split_address(full_address):
+    if pd.isna(full_address) or not full_address:
+        return "", ""
+    
+    full_address = str(full_address).strip()
+    
+    # 都道府県が含まれている場合は除去
+    full_address = re.sub(r'^(東京都|北海道|(京都|大阪)府|.{2,3}県)', '', full_address)
+    
+    # 市区郡町村パターン（〇〇市/〇〇区/〇〇郡〇〇町/〇〇郡〇〇村/〇〇町/〇〇村）
+    match = re.match(r'^(.+?[市区町村]|.+?郡.+?[町村])(.*)$', full_address)
+    if match:
+        city = match.group(1)
+        town = match.group(2)
+    else:
+        # 分割できなかった場合のセーフティ
+        city = full_address[:12]
+        town = full_address[12:]
+        
+    return city[:12], town[:16] # ヤマトB2の文字数制限に合わせてカット
 
 # ファイルアップローダー
 uploaded_file = st.file_uploader("サスケのCSVファイルを選択", type=["csv"])
@@ -19,7 +42,6 @@ if uploaded_file is not None:
         st.success(f"データ読み込み成功: {len(df_saaske)} 件")
 
         # B2クラウド標準フォーマット（95列）の枠組みを作成
-        # B2標準テンプレートの列名を定義
         b2_columns = [
             "お客様管理番号", "送り状種類", "クール区分", "伝票番号", "出荷予定日", 
             "お届け予定日", "配達時間帯", "お届け先コード", "お届け先電話番号", 
@@ -60,11 +82,14 @@ if uploaded_file is not None:
         df_b2["お届け先電話番号"] = df_saaske["電話番号"].astype(str).str.replace("-", "")
         df_b2["お届け先郵便番号"] = df_saaske["郵便番号"].astype(str).str.replace("-", "")
         
-        # 住所の結合（都道府県 + 住所1）
-        address = df_saaske["都道府県"].fillna("") + df_saaske["住所1"].fillna("")
-        df_b2["お届け先住所"] = address.str[:32]  # 文字数制限考慮
+        # 住所の分割適用（市区町村 / 町・番地）
+        full_addresses = df_saaske["都道府県"].fillna("") + df_saaske["住所1"].fillna("")
+        split_results = [split_address(addr) for addr in full_addresses]
         
-        df_b2["お届け先名"] = df_saaske["病院名"].str[:16]  # 全角16文字制限
+        df_b2["お届け先住所"] = [res[0] for res in split_results]                # 市区郡町村
+        df_b2["お届け先アパートマンション名"] = [res[1] for res in split_results] # 町名・番地
+        
+        df_b2["お届け先名"] = df_saaske["病院名"].astype(str).str[:16]  # 全角16文字制限
         
         # 固定値データ
         df_b2["送り状種類"] = "0"  # 発払い
@@ -81,7 +106,7 @@ if uploaded_file is not None:
         df_b2["ご依頼主名"] = "株式会社バリューメディカル"
 
         st.subheader("変換データプレビュー")
-        st.dataframe(df_b2[["出荷予定日", "お届け先名", "お届け先郵便番号", "お届け先住所", "品名１"]].head())
+        st.dataframe(df_b2[["出荷予定日", "お届け先名", "お届け先郵便番号", "お届け先住所", "お届け先アパートマンション名", "品名１"]].head())
 
         # CSVダウンロードボタン
         csv_buffer = io.StringIO()
